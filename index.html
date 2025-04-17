@@ -31,40 +31,69 @@
   <div id="controls">
     <select id="scaleSelect">
       <option value="major">Major</option>
-      <!-- <option value="minor">Minor</option>
-      <option value="blues">Blues</option> -->
+      <option value="minor">Minor</option>
+      <option value="blues">Blues</option>
     </select>
-    <button onclick="toggleDistortion()">Toggle Distortion</button>
+    <select id="octaveSelect">
+      <option value="-1">Octave 2</option>
+      <option value="0" selected>Octave 3</option>
+      <option value="1">Octave 4</option>
+    </select>
+    <select id="instrumentSelect">
+      <option value="guitar">Guitar</option>
+      <option value="piano">Piano</option>
+      <option value="sitar">Sitar</option>
+    </select>
+    <button onclick="toggleDistortion()">Distortion: Off</button>
+    <button onclick="toggleReverb()">Reverb: Off</button>
   </div>
-  <canvas id="playSurface" width="800" height="400"></canvas>
+  <canvas id="playSurface" width="800" height="200"></canvas>
 
   <script>
     const canvas = document.getElementById('playSurface');
     const ctx = canvas.getContext('2d');
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     let isDistortionOn = false;
+    let isReverbOn = false;
+    let currentInstrument = 'guitar';
 
-    // Define musical scales (intervals in semitones)
+    // Define musical scales (semitones for natural notes only: C, D, E, F, G, A, B)
     const scales = {
-      major: [0, 2, 4, 5, 7, 9, 11],
-      minor: [0, 2, 3, 5, 7, 8, 10],
-      blues: [0, 3, 5, 6, 7, 10]
+      major: [0, 2, 4, 5, 7, 9, 11], // C, D, E, F, G, A, B
+      minor: [0, 2, 3, 5, 7, 8, 10], // C, D, D#, F, G, G#, A#
+      blues: [0, 3, 5, 6, 7, 10] // C, D#, F, F#, G, A#
     };
 
-    // Note names for display (starting from A)
-    const noteNames = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#'];
+    // Note names (natural notes only)
+    const noteNames = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 
     let currentScale = scales.major;
-    const baseFreq = 220; // Base frequency for notes (A3)
-    const gridRows = 4; // Number of strings
-    const gridCols = 12; // Number of frets
+    const baseFreq = 220; // A3
+    const gridRows = 2; // Two strings
+    const gridCols = 7; // One column per natural note
+
+    // Generate impulse response for reverb
+    function createImpulseResponse(duration, decay) {
+      const sampleRate = audioCtx.sampleRate;
+      const length = sampleRate * duration;
+      const impulse = audioCtx.createBuffer(2, length, sampleRate);
+      const left = impulse.getChannelData(0);
+      const right = impulse.getChannelData(1);
+
+      for (let i = 0; i < length; i++) {
+        const n = length - i;
+        left[i] = (Math.random() * 2 - 1) * Math.pow(n / length, decay);
+        right[i] = (Math.random() * 2 - 1) * Math.pow(n / length, decay);
+      }
+      return impulse;
+    }
+
+    const reverbNode = audioCtx.createConvolver();
+    reverbNode.buffer = createImpulseResponse(2, 2);
 
     // Get note name for a given row and column
     function getNoteName(row, col) {
-      const scaleIndex = col % currentScale.length;
-      const octave = Math.floor(col / currentScale.length);
-      const semitone = currentScale[scaleIndex] + (12 * octave) - (row * 5); // Tuning: 5 semitones per string
-      const noteIndex = (semitone + 12) % 12; // Map to 0-11 range
+      const noteIndex = (col + (row * 5)) % noteNames.length; // 5 semitones between strings
       return noteNames[noteIndex];
     }
 
@@ -76,22 +105,19 @@
 
       ctx.strokeStyle = '#888';
       ctx.fillStyle = '#444';
-      ctx.font = '12px Arial';
+      ctx.font = '14px Arial';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#fff'; // White text for note names
+      ctx.fillStyle = '#fff';
 
       for (let row = 0; row < gridRows; row++) {
         for (let col = 0; col < gridCols; col++) {
-          // Draw cell border
           ctx.strokeRect(col * cellWidth, row * cellHeight, cellWidth, cellHeight);
-          // Highlight active cell
           if (row === currentRow && col === currentCol) {
             ctx.fillStyle = '#444';
             ctx.fillRect(col * cellWidth, row * cellHeight, cellWidth, cellHeight);
-            ctx.fillStyle = '#fff'; // Reset for text
+            ctx.fillStyle = '#fff';
           }
-          // Draw note name
           const noteName = getNoteName(row, col);
           ctx.fillText(noteName, col * cellWidth + cellWidth / 2, row * cellHeight + cellHeight / 2);
         }
@@ -100,38 +126,95 @@
 
     // Calculate frequency for a given row and column
     function getFrequency(row, col) {
-      const scaleIndex = col % currentScale.length;
-      const octave = Math.floor(col / currentScale.length);
-      const semitone = currentScale[scaleIndex] + (12 * octave) - (row * 5); // Tuning: 5 semitones per string
-      return baseFreq * Math.pow(2, semitone / 12);
+      const octaveShift = parseInt(document.getElementById('octaveSelect').value);
+      const noteIndex = (col + (row * 5)) % noteNames.length;
+      const semitone = [0, 2, 3, 5, 7, 8, 10][noteIndex]; // Map to natural note semitones
+      const octave = Math.floor((col + (row * 5)) / noteNames.length);
+      return (baseFreq * Math.pow(2, octaveShift)) * Math.pow(2, (semitone + (12 * octave)) / 12);
     }
 
-    // Play a note with Web Audio API
+    // Play a note with instrument-specific sound
     function playNote(freq) {
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      oscillator.type = 'sawtooth'; // Guitar-like waveform
-      oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      const now = audioCtx.currentTime;
+      let osc1, osc2, gainNode;
 
-      // Distortion effect
-      let destination = audioCtx.destination;
-      if (isDistortionOn) {
+      if (currentInstrument === 'guitar') {
+        osc1 = audioCtx.createOscillator();
+        osc2 = audioCtx.createOscillator();
+        osc1.type = 'sawtooth';
+        osc2.type = 'sine';
+        osc1.frequency.setValueAtTime(freq, now);
+        osc2.frequency.setValueAtTime(freq + 0.05, now);
+
+        gainNode = audioCtx.createGain();
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.2, now + 0.05);
+        gainNode.gain.linearRampToValueAtTime(0.14, now + 0.15);
+        gainNode.gain.linearRampToValueAtTime(0.14, now + 0.45);
+        gainNode.gain.linearRampToValueAtTime(0, now + 0.75);
+
+        osc1.connect(gainNode);
+        osc2.connect(gainNode);
+      } else if (currentInstrument === 'piano') {
+        osc1 = audioCtx.createOscillator();
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(freq, now);
+
+        gainNode = audioCtx.createGain();
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.3, now + 0.01);
+        gainNode.gain.linearRampToValueAtTime(0.1, now + 0.31);
+        gainNode.gain.linearRampToValueAtTime(0.1, now + 0.81);
+        gainNode.gain.linearRampToValueAtTime(0, now + 1.11);
+
+        osc1.connect(gainNode);
+      } else if (currentInstrument === 'sitar') {
+        osc1 = audioCtx.createOscillator();
+        osc1.type = 'sawtooth';
+        osc1.frequency.setValueAtTime(freq, now);
+
+        const lfo = audioCtx.createOscillator();
+        lfo.type = 'sine';
+        lfo.frequency.setValueAtTime(5, now);
+        const lfoGain = audioCtx.createGain();
+        lfoGain.gain.setValueAtTime(0.5, now);
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc1.frequency);
+        lfo.start();
+        lfo.stop(now + 1.0);
+
+        gainNode = audioCtx.createGain();
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.2, now + 0.05);
+        gainNode.gain.linearRampToValueAtTime(0.1, now + 0.25);
+        gainNode.gain.linearRampToValueAtTime(0.1, now + 0.75);
+        gainNode.gain.linearRampToValueAtTime(0, now + 1.25);
+
+        osc1.connect(gainNode);
+      }
+
+      let lastNode = gainNode;
+      if (currentInstrument === 'guitar' && isDistortionOn) {
         const distortion = audioCtx.createWaveShaper();
         distortion.curve = makeDistortionCurve(50);
         distortion.oversample = '4x';
-        oscillator.connect(distortion);
-        distortion.connect(gainNode);
+        lastNode.connect(distortion);
+        lastNode = distortion;
+      }
+      if (currentInstrument !== 'piano' && isReverbOn) {
+        lastNode.connect(reverbNode);
+        reverbNode.connect(audioCtx.destination);
       } else {
-        oscillator.connect(gainNode);
+        lastNode.connect(audioCtx.destination);
       }
 
-      gainNode.connect(audioCtx.destination);
-      gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.5); // Short note duration
+      osc1.start();
+      if (osc2) osc2.start();
+      osc1.stop(now + (currentInstrument === 'piano' ? 1.11 : currentInstrument === 'sitar' ? 1.25 : 0.75));
+      if (osc2) osc2.stop(now + 0.75);
     }
 
-    // Distortion curve for effect
+    // Distortion curve
     function makeDistortionCurve(amount) {
       const samples = 44100;
       const curve = new Float32Array(samples);
@@ -143,16 +226,39 @@
       return curve;
     }
 
-    // Update scale when changed
+    // Update scale
     document.getElementById('scaleSelect').addEventListener('change', (e) => {
       currentScale = scales[e.target.value];
       drawGrid();
     });
 
-    // Toggle distortion effect
+    // Update octave
+    document.getElementById('octaveSelect').addEventListener('change', () => {
+      drawGrid();
+    });
+
+    // Update instrument
+    document.getElementById('instrumentSelect').addEventListener('change', (e) => {
+      currentInstrument = e.target.value;
+      isDistortionOn = false;
+      document.querySelectorAll('button')[0].textContent = Distortion: Off;
+      drawGrid();
+    });
+
+    // Toggle distortion
     function toggleDistortion() {
-      isDistortionOn = !isDistortionOn;
-      document.querySelector('button').textContent = `Distortion: ${isDistortionOn ? 'On' : 'Off'}`;
+      if (currentInstrument === 'guitar') {
+        isDistortionOn = !isDistortionOn;
+        document.querySelectorAll('button')[0].textContent = Distortion: ${isDistortionOn ? 'On' : 'Off'};
+      }
+    }
+
+    // Toggle reverb
+    function toggleReverb() {
+      if (currentInstrument !== 'piano') {
+        isReverbOn = !isReverbOn;
+        document.querySelectorAll('button')[1].textContent = Reverb: ${isReverbOn ? 'On' : 'Off'};
+      }
     }
 
     // Handle mouse/touch input
