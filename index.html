@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeoShred-Inspired Web Instrument</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #f0f0f0;
+    }
+    canvas {
+      border: 2px solid #333;
+      background-color: #222;
+    }
+    #controls {
+      margin: 20px;
+    }
+    button, select {
+      padding: 10px;
+      margin: 5px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <select id="scaleSelect">
+      <option value="major">Major</option>
+      <!-- <option value="minor">Minor</option>
+      <option value="blues">Blues</option> -->
+    </select>
+    <button onclick="toggleDistortion()">Toggle Distortion</button>
+  </div>
+  <canvas id="playSurface" width="800" height="400"></canvas>
+
+  <script>
+    const canvas = document.getElementById('playSurface');
+    const ctx = canvas.getContext('2d');
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let isDistortionOn = false;
+
+    // Define musical scales (intervals in semitones)
+    const scales = {
+      major: [0, 2, 4, 5, 7, 9, 11],
+      minor: [0, 2, 3, 5, 7, 8, 10],
+      blues: [0, 3, 5, 6, 7, 10]
+    };
+
+    // Note names for display (starting from A)
+    const noteNames = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#'];
+
+    let currentScale = scales.major;
+    const baseFreq = 220; // Base frequency for notes (A3)
+    const gridRows = 4; // Number of strings
+    const gridCols = 12; // Number of frets
+
+    // Get note name for a given row and column
+    function getNoteName(row, col) {
+      const scaleIndex = col % currentScale.length;
+      const octave = Math.floor(col / currentScale.length);
+      const semitone = currentScale[scaleIndex] + (12 * octave) - (row * 5); // Tuning: 5 semitones per string
+      const noteIndex = (semitone + 12) % 12; // Map to 0-11 range
+      return noteNames[noteIndex];
+    }
+
+    // Draw the playing surface with note names
+    function drawGrid() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const cellWidth = canvas.width / gridCols;
+      const cellHeight = canvas.height / gridRows;
+
+      ctx.strokeStyle = '#888';
+      ctx.fillStyle = '#444';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff'; // White text for note names
+
+      for (let row = 0; row < gridRows; row++) {
+        for (let col = 0; col < gridCols; col++) {
+          // Draw cell border
+          ctx.strokeRect(col * cellWidth, row * cellHeight, cellWidth, cellHeight);
+          // Highlight active cell
+          if (row === currentRow && col === currentCol) {
+            ctx.fillStyle = '#444';
+            ctx.fillRect(col * cellWidth, row * cellHeight, cellWidth, cellHeight);
+            ctx.fillStyle = '#fff'; // Reset for text
+          }
+          // Draw note name
+          const noteName = getNoteName(row, col);
+          ctx.fillText(noteName, col * cellWidth + cellWidth / 2, row * cellHeight + cellHeight / 2);
+        }
+      }
+    }
+
+    // Calculate frequency for a given row and column
+    function getFrequency(row, col) {
+      const scaleIndex = col % currentScale.length;
+      const octave = Math.floor(col / currentScale.length);
+      const semitone = currentScale[scaleIndex] + (12 * octave) - (row * 5); // Tuning: 5 semitones per string
+      return baseFreq * Math.pow(2, semitone / 12);
+    }
+
+    // Play a note with Web Audio API
+    function playNote(freq) {
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      oscillator.type = 'sawtooth'; // Guitar-like waveform
+      oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+      // Distortion effect
+      let destination = audioCtx.destination;
+      if (isDistortionOn) {
+        const distortion = audioCtx.createWaveShaper();
+        distortion.curve = makeDistortionCurve(50);
+        distortion.oversample = '4x';
+        oscillator.connect(distortion);
+        distortion.connect(gainNode);
+      } else {
+        oscillator.connect(gainNode);
+      }
+
+      gainNode.connect(audioCtx.destination);
+      gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.5); // Short note duration
+    }
+
+    // Distortion curve for effect
+    function makeDistortionCurve(amount) {
+      const samples = 44100;
+      const curve = new Float32Array(samples);
+      const deg = Math.PI / 180;
+      for (let i = 0; i < samples; i++) {
+        const x = (i * 2) / samples - 1;
+        curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
+      }
+      return curve;
+    }
+
+    // Update scale when changed
+    document.getElementById('scaleSelect').addEventListener('change', (e) => {
+      currentScale = scales[e.target.value];
+      drawGrid();
+    });
+
+    // Toggle distortion effect
+    function toggleDistortion() {
+      isDistortionOn = !isDistortionOn;
+      document.querySelector('button').textContent = `Distortion: ${isDistortionOn ? 'On' : 'Off'}`;
+    }
+
+    // Handle mouse/touch input
+    let currentRow = -1;
+    let currentCol = -1;
+    let isPlaying = false;
+
+    function handleInput(x, y) {
+      const cellWidth = canvas.width / gridCols;
+      const cellHeight = canvas.height / gridRows;
+      const col = Math.floor(x / cellWidth);
+      const row = Math.floor(y / cellHeight);
+
+      if (row !== currentRow || col !== currentCol) {
+        currentRow = row;
+        currentCol = col;
+        if (row >= 0 && row < gridRows && col >= 0 && col < gridCols) {
+          const freq = getFrequency(row, col);
+          playNote(freq);
+          drawGrid();
+        }
+      }
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      isPlaying = true;
+      const rect = canvas.getBoundingClientRect();
+      handleInput(e.clientX - rect.left, e.clientY - rect.top);
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (isPlaying) {
+        const rect = canvas.getBoundingClientRect();
+        handleInput(e.clientX - rect.left, e.clientY - rect.top);
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      isPlaying = false;
+      currentRow = -1;
+      currentCol = -1;
+      drawGrid();
+    });
+
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      handleInput(touch.clientX - rect.left, touch.clientY - rect.top);
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      handleInput(touch.clientX - rect.left, touch.clientY - rect.top);
+    });
+
+    canvas.addEventListener('touchend', () => {
+      currentRow = -1;
+      currentCol = -1;
+      drawGrid();
+    });
+
+    // Initialize
+    drawGrid();
+  </script>
+</body>
+</html>
